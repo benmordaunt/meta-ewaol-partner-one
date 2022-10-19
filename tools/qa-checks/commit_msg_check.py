@@ -45,24 +45,40 @@ class CommitMsgCheck(abstract_check.AbstractCheck):
 
     @staticmethod
     def get_vars():
-        list_vars = {}
-        plain_vars = {}
-        optional_var_names = []
 
-        list_vars["paths"] = "File paths to target Git repositories."
-        plain_vars["title_length"] = "Maximum number of characters in title."
-        plain_vars["body_length"] = ("Maximum number of characters in each"
-                                     " line of message body.")
-        plain_vars["commits"] = ("Defines the commit messages to check. Can be"
-                                 " defined in one of two formats: '-N' to"
-                                 " check the latest N commit messages, or"
-                                 " 'commit1(,commit2,...)' as a string list of"
-                                 " commits to check. The commits must be valid"
-                                 " when passed to the 'git show' command, for"
-                                 " example a commit SHA or a relative commit"
-                                 " like HEAD~2.")
-
-        return list_vars, plain_vars, optional_var_names
+        return [
+            abstract_check.CheckSetting(
+                "paths",
+                is_list=True,
+                default=["ROOT"],
+                message=("File paths to target Git repositories. Relative file"
+                         " paths will be considered relative to"
+                         " 'project_root'.")
+            ),
+            abstract_check.CheckSetting(
+                "title_length",
+                default=80,
+                message="Maximum number of characters in title."
+            ),
+            abstract_check.CheckSetting(
+                "body_length",
+                default=80,
+                message=("Maximum number of characters in each"
+                         " line of message body.")
+            ),
+            abstract_check.CheckSetting(
+                "commits",
+                default="-1",
+                message=("Defines the commit messages to check. Can be"
+                         " defined in one of two formats: '-N' to"
+                         " check the latest N commit messages, or"
+                         " 'commit1(,commit2,...)' as a string list of"
+                         " commits to check. The commits must be valid"
+                         " when passed to the 'git show' command, for"
+                         " example a commit SHA or a relative commit"
+                         " like HEAD~2.")
+            )
+        ]
 
     def __init__(self, logger, *args, **kwargs):
         self.logger = logger
@@ -141,7 +157,7 @@ class CommitMsgCheck(abstract_check.AbstractCheck):
                 continue
 
             if not os.path.isabs(path):
-                path = os.path.abspath(path)
+                path = os.path.join(self.project_root, path)
 
             for commit in commits:
 

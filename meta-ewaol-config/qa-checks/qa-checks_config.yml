@@ -15,6 +15,10 @@
 # value from the defaults section will be used.
 
 ---
+run_checks_settings:
+    default_check_excludes:
+        - layer
+
 defaults:
     paths:
         - ROOT
@@ -36,6 +40,7 @@ modules:
         exclude_patterns:
             - GITIGNORE_CONTENTS
             - "/meta-ewaol-config/qa-checks/ewaol-dictionary"
+            - "/tools/qa-checks/non-inclusive-language.txt"
             - "/license.rst"
             - "*.git"
             - "*.gitignore"
@@ -44,6 +49,16 @@ modules:
             - "*.cfg"
             - "*.css"
             - "*.scc"
+            - "*.patch"
+
+    inclusivity:
+        exclude_patterns:
+            - GITIGNORE_CONTENTS
+            - "/tools/qa-checks/non-inclusive-language.txt"
+            - "*.git"
+            - "*.gitignore"
+            - "*.pyc"
+            - "*.png"
             - "*.patch"
 
     layer:
@@ -55,6 +70,9 @@ modules:
             - "meta-ewaol-distro"
             - "meta-ewaol-tests"
             - "meta-ewaol-bsp"
+        machines:
+            - "qemuarm64"
+            - "n1sdp"
 
     python:
         file_types:

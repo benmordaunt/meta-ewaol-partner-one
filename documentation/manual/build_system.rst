@@ -64,9 +64,9 @@ respectively. Example usage of these kas configuration files can be found in the
 Target Platforms
 ****************
 
-There is currently one supported target platform (corresponding to the
-``MACHINE`` BitBake variable) with an associated kas configuration file, as
-follows.
+There are currently two supported target platforms (corresponding to the
+``MACHINE`` BitBake variable), each with an associated kas configuration file,
+as follows.
 
 N1SDP
 =====
@@ -75,12 +75,21 @@ N1SDP
   * **Target Platform Config**: ``meta-ewaol-config/kas/n1sdp.yml``.
 
   This supported target platform is the Neoverse N1 System Development Platform
-  (N1SDP), implemented in |meta-arm-bsp|_.
+  (N1SDP), implemented in the |meta-arm-bsp|_ Yocto BSP layer.
 
   To enable this, the ``n1sdp.yml`` Target Platform Config includes common
   configuration from the ``meta-ewaol-config/kas/include/arm-machines.yml`` kas
   configuration file, which defines the BSPs, layers, and dependencies required
   when building for the ``n1sdp``.
+
+AVA
+===
+
+  * **Corresponding value for** ``MACHINE`` **variable**: ``ava``.
+  * **Target Platform Config**: ``meta-ewaol-config/kas/ava.yml``.
+
+  This supported target platform is the AVA Developer Platform (AVA),
+  implemented in the |meta-adlink-ampere|_ Yocto BSP layer.
 
 ***************************
 Distribution Image Features
@@ -183,9 +192,9 @@ within the ``meta-ewaol-distro/conf/multiconfig/ewaol-guest-vm.conf`` file and
 the ``meta-ewaol-distro/conf/distro/include/ewaol-guest-vm.inc`` which it
 includes.
 
-The following list shows the available variables for the Control VM and the
-single default Guest VM, together with the default values (where ``MB`` and
-``KB`` refer to Megabytes and Kilobytes, respectively):
+The following list shows the standard set of available variables for the Control
+VM and the single default Guest VM, together with the default values (where
+``MB`` and ``KB`` refer to Megabytes and Kilobytes, respectively):
 
   .. code-block:: yaml
     :substitutions:
@@ -220,6 +229,50 @@ instance using the kas tool is given in
 ``meta-ewaol-config/kas/include/second-guest-vm-parameters.yml``, although
 these variables will only be used if ``EWAOL_GUEST_VM_INSTANCES`` is set to
 build two or more Guest VMs.
+
+.. _manual_build_system_pci_passthrough:
+
+Configuring Guest VM PCI Device Passthrough
+"""""""""""""""""""""""""""""""""""""""""""
+
+An EWAOL virtualization distribution image running on the AVA Developer Platform
+is capable of supporting Xen PCI passthrough, allowing Guest VMs to be assigned
+exclusive use of a single PCI device. This capability is not enabled by default,
+and requires the following Build Modifier Config:
+
+  * **Build Modifier Config**:
+    ``meta-ewaol-config/kas/xen_pci_passthrough.yml``.
+
+    This Build Modifier Config appends ``xen-pci-passthrough`` to
+    ``MACHINE_FEATURES``.
+
+.. note::
+  Xen PCI device passthrough is currently only supported on the AVA Developer
+  Platform.
+
+With the capability enabled, it is then possible to assign a single PCI device
+to a Guest VM by configuring an additional environment variable, provided for
+the corresponding Guest VM. This environment variable and its default value when
+the Build Modifier Config is provided to enable Xen PCI passthrough support is
+as follows:
+
+  .. code-block:: yaml
+
+    EWAOL_GUEST_VM1_PCI_PASSTHROUGH_DEVICE: "0000:01:00.0"         # PCI device ID to be assigned
+
+As described in the previous section, this example environment variable
+customizes the first Guest VM only, but other Guest VMs may be configured
+similarly (if they have been defined).
+
+By default, the Build Modifier Config assigns the first PCI ethernet network
+device (which has device ID ``0000:01:00.0``) for exclusive use by the first
+Guest VM.
+
+.. warning::
+  The PCI device IDs configured for PCI passthrough are not validated as part of
+  the EWAOL build system, and it is therefore the responsibility of the user to
+  ensure that the device IDs are valid, and that multiple Guest VMs have not
+  been assigned exclusive use of the same PCI device.
 
 Other EWAOL Features
 ====================
@@ -257,18 +310,19 @@ Run-Time Integration Tests
     and appends the ``ewaol-test`` feature to ``DISTRO_FEATURES`` for the build.
 
     To include run-time integration tests on an EWAOL distribution image,
-    provide the Build Modifier Config to the kas build command. For example, to
-    include the tests on an EWAOL distribution image for the N1SDP hardware
-    target platform, run the following commands depending on the target
-    architecture:
+    provide the Build Modifier Config to the kas build command.
 
-    * Baremetal architecture:
+    For example, to include the tests on an EWAOL distribution image for the
+    N1SDP hardware target platform, run the following commands depending on the
+    target architecture:
+
+    * Baremetal architecture for N1SDP:
 
       .. code-block:: console
 
         kas build meta-ewaol-config/kas/baremetal.yml:meta-ewaol-config/kas/tests.yml:meta-ewaol-config/kas/n1sdp.yml
 
-    * Virtualization architecture:
+    * Virtualization architecture for N1SDP:
 
       .. code-block:: console
 
@@ -295,18 +349,19 @@ Security Hardening
 
     To include extra security hardening on an EWAOL distribution image, provide
     the Build Modifier Config to the kas build command, which appends the
-    ``ewaol-security`` feature to ``DISTRO_FEATURES`` for the build. For
-    example, to include it on the EWAOL distribution image for the N1SDP
-    hardware target platform, run the following commands depending on the
-    target architecture:
+    ``ewaol-security`` feature to ``DISTRO_FEATURES`` for the build.
 
-    * Baremetal architecture:
+    For example, to include it on the EWAOL distribution image for the N1SDP
+    hardware target platform, run the following commands depending on the target
+    architecture:
+
+    * Baremetal architecture for N1SDP:
 
       .. code-block:: console
 
         kas build meta-ewaol-config/kas/baremetal.yml:meta-ewaol-config/kas/security.yml:meta-ewaol-config/kas/n1sdp.yml
 
-    * Virtualization architecture:
+    * Virtualization architecture for N1SDP:
 
       .. code-block:: console
 
@@ -342,17 +397,19 @@ Software Development Kit (SDK)
     Config.
 
     To include the SDK on an EWAOL distribution image, provide the appropriate
-    SDK Build Modifier Config to the kas build command. For example, to include
-    the SDK on an EWAOL distribution image for the N1SDP hardware target
-    platform, run the following commands depending on the target architecture:
+    SDK Build Modifier Config to the kas build command.
 
-    * Baremetal architecture:
+    For example, to include the SDK on an EWAOL distribution image for the N1SDP
+    hardware target platform, run the following commands depending on the target
+    architecture:
+
+    * Baremetal architecture for N1SDP:
 
       .. code-block:: console
 
         kas build meta-ewaol-config/kas/baremetal-sdk.yml:meta-ewaol-config/kas/n1sdp.yml
 
-    * Virtualization architecture:
+    * Virtualization architecture for N1SDP:
 
       .. code-block:: console
 
@@ -378,11 +435,20 @@ Adding Extra Rootfs Space
 The size of the root filesystem can be extended via the
 ``EWAOL_ROOTFS_EXTRA_SPACE`` BitBake variable, which defaults to ``2000000``
 Kilobytes. The value of this variable is appended to the
-``IMAGE_ROOTFS_EXTRA_SPACE`` BitBake variable. For an EWAOL virtualization
-distribution image, the root filesystems of both the Control VM and the Guest
-VM(s) are extended via this variable, in addition to any other parameters which
-affect those filesystems as described in
+``IMAGE_ROOTFS_EXTRA_SPACE`` BitBake variable.
+
+For an EWAOL virtualization distribution image, additional variables are
+provided which apply to the different root filesystems as described in
 :ref:`Virtualization Architecture Customization <manual_build_system_virtualization_customization>`.
+By default, the Control VM's rootfs size is increased at build-time to support
+the sum of all Guest VM rootfs sizes. The customizable
+``EWAOL_CONTROL_VM_ROOTFS_EXTRA_SPACE`` variable therefore corresponds just to
+the space allocated for the Control VM rootfs, in addition to the size necessary
+to support the Guest VM(s). Increasing ``EWAOL_ROOTFS_EXTRA_SPACE`` when
+building an EWAOL virtualization distribution image increases
+both the Guest VM(s) and Control VM rootfs size, which means that increasing
+this variable will result in the Control VM rootfs size expanding by more than
+the set value.
 
 Filesystem Compilation Tuning
 -----------------------------

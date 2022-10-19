@@ -7,9 +7,62 @@
 Changelog & Release Notes
 #########################
 
-******
+**********
+Unreleased
+**********
+
+New Features
+============
+
+* Added support for building and running EWAOL on the AVA Developer Platform
+* Added capability for Xen PCI device passthrough, currently supported for Guest
+  VMs running on the AVA Developer Platform
+
+Changed
+=======
+
+Distro:
+
+  * Updated rootfs size management for EWAOL virtualization distribution images,
+    to add build-time functionality that automatically configures the size of
+    the Control VM rootfs sufficient to support all Guest VM root filesystems
+
+Tests:
+
+  * Upgraded the run-time integration tests to include validation of all EWAOL
+    Guest VMs that are deployed on an EWAOL virtualization distribution image
+
+Tools:
+
+  * Expanded QA checks to add a non-inclusive language check module, which
+    attempts to identify and highlight potential usage of non-inclusive
+    terminology within the repository
+  * Parallelized the execution of QA checks, supported by a new
+    ``--number_threads`` command line argument
+  * Made various other improvements to the QA checks to increase usability and
+    maintainability
+  * Bumped dependency versions for the documentation build tool
+  * Updated kas minimal required version to ``3.1``
+
+Limitations
+===========
+
+None.
+
+Resolved and Known Issues
+=========================
+
+Resolved Issues:
+
+  * Resolved the K3s recipe build timeout issue reported as a
+    :ref:`known issue<changelog_v1.0_known_issues>` in the EWAOL ``v1.0``
+    release.
+  * Identified and resolved a rare race condition in the K3s integration test
+    suite which could occasionally cause the validation to fail
+
+****
 v1.0
-******
+****
 
 New Features
 ============
@@ -124,6 +177,8 @@ None.
 
 Resolved and Known Issues
 =========================
+
+.. _changelog_v1.0_known_issues:
 
 Known Issues:
 

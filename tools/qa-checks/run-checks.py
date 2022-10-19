@@ -34,6 +34,8 @@ argument to this script.
 import argparse
 import inspect
 import logging
+import logging.handlers
+import multiprocessing
 import os
 import shutil
 import subprocess
@@ -46,6 +48,7 @@ import abstract_check
 import commit_msg_check
 import doc_build_check
 import header_check
+import inclusivity_check
 import layer_check
 import python_check
 import shell_check
@@ -60,6 +63,7 @@ import modules_virtual_env  # noqa: E402
 AVAILABLE_CHECKS = [commit_msg_check.CommitMsgCheck,
                     doc_build_check.DocBuildCheck,
                     header_check.HeaderCheck,
+                    inclusivity_check.InclusivityCheck,
                     layer_check.LayerCheck,
                     python_check.PythonCheck,
                     shell_check.ShellCheck,
@@ -67,15 +71,23 @@ AVAILABLE_CHECKS = [commit_msg_check.CommitMsgCheck,
                     yaml_check.YamlCheck,
                     ]
 
-# All checks except these will be run by default if specific checkers are not
-# requested.
-DEFAULT_EXCLUDE = [layer_check.LayerCheck]
-
 # The following keywords can be passed as values to the arguments.
 # They will be set to their correct mapped values lazily.
 KEYWORD_MAP = dict()
 KEYWORD_MAP["ROOT"] = None
 KEYWORD_MAP["GITIGNORE_CONTENTS"] = None
+
+CHECK_NAMES = [check.name for check in AVAILABLE_CHECKS]
+VALID_CHECKS = set(CHECK_NAMES + ["default", "all"])
+
+LOG_LEVELS = {
+    "warning": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG
+}
+
+# First argument should evaluate to the project name (basename of project_root)
+DEFAULT_CONFIG_FILENAME = "qa-checks_config.yml"
 
 
 def convert_gitstyle_pattern_to_regex(pattern):
@@ -100,7 +112,7 @@ def convert_gitstyle_pattern_to_regex(pattern):
     pattern = pattern.replace("*", r"[^/]*")
     pattern = pattern.replace("?", r"[^/]")
 
-    project_root = eval_keyword("ROOT")
+    project_root = eval_keyword("ROOT").rstrip('/')
     if pattern.startswith("/"):
         pattern = f"{project_root}{pattern}"
         pass
@@ -155,17 +167,6 @@ def eval_keyword(keyword):
 
 def parse_options():
 
-    loglevels = {
-        "warning": logging.WARNING,
-        "info": logging.INFO,
-        "debug": logging.DEBUG
-    }
-
-    check_names = [check.name for check in AVAILABLE_CHECKS]
-    excluded_check_names = [check.name for check in DEFAULT_EXCLUDE]
-    default_check_names = [name for name in check_names
-                           if name not in excluded_check_names]
-
     desc = ("run-checks.py is used to execute a set of quality-check modules"
             " on the repository. By default, a virtual Python environment is"
             " created to install the Python packages necessary to run the"
@@ -176,30 +177,32 @@ def parse_options():
                " to the per-check configuration within the default config YAML"
                " file.")
 
-    excluded_str = ""
-    if excluded_check_names:
-        excluded_str = ("\nAdditional non-default checks can be enabled"
-                        f" explicitly: {{{','.join(excluded_check_names)}}}.")
-    sets = (f"The default checks are: {{{','.join(default_check_names)}}}."
-            f"{excluded_str}")
+    sets = (f"The available checks are: {{{','.join(CHECK_NAMES)}}}.")
+
+    note = (" Note: only checks defined in the config file will be run by"
+            " default, unless no config is defined, or called directly.")
 
     # Parse Arguments and assign to args object
     parser = argparse.ArgumentParser(
         prog=os.path.basename(__file__),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=f"{desc}\n{usage}\n\n{example}\n\n{sets}")
+        description=f"{desc}\n{usage}\n\n{example}\n\n{sets}\n\n{note}")
 
     parser.add_argument("--check", action="append", default=[],
-                        choices=check_names + ["default", "all"],
                         dest="checks",
-                        help=("Add a specific check to run, or the 'default'"
-                              " set, or 'all' checks. If not given, then the"
-                              " default set will be run."))
+                        metavar="{" + ",".join(sorted(VALID_CHECKS)) + "}",
+                        help=("Comma-separated list: Add specific checks to"
+                              " run, or the 'default' set, or 'all' checks. If"
+                              " not given, then the default config modules"
+                              " will be used as defined by the config and/or "
+                              " default_check_excludes. Multiple checks can be"
+                              " specified as a list and by passing the"
+                              " argument multiple times."))
 
     # Internal usage: a requested check may be skipped using this option (e.g.
     # due to failed dependency-installation in the virtual environment)
     parser.add_argument("--skip", action="append", default=[],
-                        choices=check_names,
+                        choices=CHECK_NAMES,
                         dest="skip_checks",
                         help=argparse.SUPPRESS)
 
@@ -207,23 +210,23 @@ def parse_options():
     for check in AVAILABLE_CHECKS:
 
         name = check.name
-        list_args, args, _ = check.get_vars()
+        settings = check.get_vars()
 
         group = parser.add_argument_group(f"{name} check arguments")
 
-        for arg, msg in {**list_args, **args}.items():
+        for setting in settings:
             prefix = ""
-            if arg in list_args:
+            if setting.is_list:
                 prefix = "Comma-separated list: "
-            group.add_argument(f"--{name}_{arg}", required=False,
-                               help=(f"{prefix}{msg}"))
+            group.add_argument(f"--{name}_{setting.name}", required=False,
+                               help=(f"{prefix}{setting.message}"))
 
-    default_config_file = "meta-ewaol-config/qa-checks/qa-checks_config.yml"
     parser.add_argument("--config",
                         help=("YAML file that holds configuration defaults for"
-                              " the checkers (default: <PROJECT_ROOT>/"
-                              f"{default_config_file})"
-                              ))
+                              " the checkers. If not provided, the project"
+                              " root directory will be searched to find the"
+                              " default config file name:"
+                              f" {DEFAULT_CONFIG_FILENAME}"))
 
     parser.add_argument("--no_config",
                         action="store_true",
@@ -266,229 +269,408 @@ def parse_options():
     parser.add_argument("--project_root",
                         required=False,
                         default=default_root,
-                        help=("Define the project root path, from which all"
-                              " provided relative paths will be considered"
-                              f" (Default: {default_root})"))
+                        help=("Define the root path of the target project,"
+                              " used as the base path for any check argument"
+                              " given as a relative file-path (Default:"
+                              f" {default_root})"))
 
     parser.add_argument("--log", default="info",
-                        choices=["debug", "info", "warning"],
+                        choices=LOG_LEVELS.keys(),
                         help="Set the log level (Default: info).")
+
+    parser.add_argument("--default_check_excludes",
+                        help=("Comma-separated list: Exclude a list of checks"
+                              " from being run as 'default'."))
+
+    parser.add_argument("--number_threads",
+                        default=min(os.cpu_count(), len(AVAILABLE_CHECKS)),
+                        type=int,
+                        help=("Set the max number of threads to use to run"
+                              " checks."))
 
     opts = parser.parse_args()
 
-    logger.setLevel(loglevels.get(opts.log.lower()))
+    return opts
 
+
+def parse_config(config_path):
+    """ Parse the config file and return a dictionary with all config options.
+        """
+
+    # Create a dictionary of valid checks and parameters
+    valid_params = {}
+    for check in AVAILABLE_CHECKS:
+        settings = check.get_vars()
+        valid_params[check.name] = {
+            setting.name: setting for setting in settings}
+
+    config_dict = {}
+
+    try:
+        import yaml
+
+        with open(config_path, 'r') as config_file:
+            yaml_content = yaml.safe_load(config_file)
+
+            if 'run_checks_settings' in yaml_content:
+                config_settings = yaml_content['run_checks_settings']
+                valid_settings = {'default_check_excludes'}
+                for setting_name, value in config_settings.items():
+                    if setting_name in valid_settings:
+                        config_dict[setting_name] = value
+                    else:
+                        logger.warning(
+                            f"Cannot set run_checks_settings/{setting_name}"
+                            " from config. Currently only"
+                            f" {{{','.join(sorted(valid_settings))}}} can be "
+                            "set from config.")
+
+            if 'defaults' in yaml_content:
+                defaults = yaml_content['defaults']
+            else:
+                defaults = {}
+
+            modules = yaml_content['modules']
+            config_dict['all_checks'] = modules.keys()
+
+            for module, params in modules.items():
+
+                # Warn if there are non existent modules configured.
+                if module not in valid_params:
+                    logger.warning(f"Check module {module} was not found.")
+                    continue
+
+                valid_check_params = valid_params[module]
+
+                if params is not None:
+                    for key, value in params.items():
+                        # Warn if there are extra parameters defined.
+                        if key not in valid_check_params:
+                            logger.warning(f"Config param {module}/{key} is"
+                                           " invalid")
+                            continue
+                        config_dict[f'{module}_{key}'] = value
+
+                for key, value in defaults.items():
+                    # Ignore default if not for this module
+                    if key not in valid_check_params:
+                        continue
+
+                    full_key = f'{module}_{key}'
+                    # Ignore if value already found
+                    if full_key in config_dict:
+                        continue
+                    config_dict[full_key] = value
+
+    except FileNotFoundError:
+        logger.error(f"Config file '{config_path}' was not found.")
+        exit(1)
+
+    except ImportError:
+        logger.error(("Could not import the Python yaml module. Either install"
+                      " 'pyyaml' via pip on the host system to load"
+                      " the YAML configuration file, or pass --no_config."))
+        exit(1)
+    except KeyError:
+        logger.error(f"Invalid config {config_path}")
+        exit(1)
+
+    return config_dict
+
+
+def resolve_checks_list(opts, config):
+    """ Process and validate the list of checks.
+        The order of priority to use (highest first):
+            command line, config file, default.
+        If default or all is provided, these override the value.
+        """
+
+    # If no config then use hard coded all
+    if opts.no_config is True:
+        all_checks = CHECK_NAMES
+        default_checks = []
+    # If there is a config, then 'all' defined as all checks in config
+    elif 'all_checks' in config:
+        all_checks = config['all_checks']
+        # 'default' is 'all' with 'default_check_excludes' removed.
+        default_checks = [check for check in all_checks
+                          if check not in opts.default_check_excludes]
+    # If there is a config that defines no checks then 'all' and 'default' are
+    # empty
+    else:
+        all_checks = []
+        default_checks = []
+
+    # Split any comma separated checks in the list
+    checks = []
+    for check_sublist in opts.checks:
+        checks.extend(check_sublist.split(","))
+    opts.checks = checks
+
+    # Validate values
+    has_invalid_check = False
+    for check in opts.checks:
+        if check not in VALID_CHECKS:
+            logger.error(f"Argument 'check': value '{check}' is invalid."
+                         f" Choose from {VALID_CHECKS}")
+            has_invalid_check = True
+    if has_invalid_check:
+        exit(1)
+
+    # Set default here because the append action extends the argparse default
+    # rather than replaces the default
+    if len(opts.checks) == 0 or "default" in opts.checks:
+        opts.checks = default_checks
+
+    if "all" in opts.checks:
+        opts.checks = all_checks
+
+
+def resolve_check_param_from_config(key, config, setting):
+    """ Get the check param value from config (if it exists, None otherwise)
+        and perform config specific value validation. """
+
+    value = None
+    if key in config:
+        value = config[key]
+        if value is not None:
+            # Check the resulting type is as expected
+            if ((setting.is_list and type(value) is not list) or
+                    (not setting.is_list and type(value) is list)):
+                logger.error((f"Type of {check_name} {param} in"
+                              f" {config_filename} does not match type"
+                              " expected by check module. Discarding"
+                              " this value."))
+                return None
+            if setting.is_list and None in value:
+                logger.error(("Found one or more empty elements for the"
+                              f" {check_name} {param} list variable in"
+                              f" {config_filename}. Discarding this"
+                              " value."))
+                return None
+    return value
+
+
+def resolve_check_param(opts, config, check_name, setting):
+    """ For a parameter, we check if we have a value from the command line
+        arguments. If we do, we either append it to or replace the default in
+        the configuration YAML file, depending on whether or not it is a list
+        variable. If no value can be found and the variable is not optional,
+        then the check will be skipped, by removing it from the opts.
+
+        If --no_config was supplied, config will be empty so config_value will
+        be None.
+
+        If the parameter is a pattern then special formatting is applied. """
+    param = setting.name
+    key = f"{check_name}_{param}"
+    is_list = setting.is_list
+
+    value = None
+    try:
+        value = getattr(opts, key)
+        if value is not None and is_list:
+            value = value.split(",")
+    except AttributeError:
+        pass
+
+    config_value = resolve_check_param_from_config(key, config, setting)
+    # Merge with list from config file
+    if config_value is not None and is_list:
+        if value is not None:
+            value.extend(config_value)
+
+    if value is None:
+        value = config_value
+
+    if value is None:
+        # Nothing supplied for this parameter
+
+        if not setting.required:
+            # Optional, so use its default value (which may be None)
+            value = setting.default
+
+    # If value is still None, then we didn't find anything for this param
+    # from command line or config file and the default value is None
+    if value is not None:
+
+        # Replace any keywords with mapped values
+        # If it's a list, extend with the contents of the keyword
+        # If it's not a list, replace with the contents of the keyword
+        if is_list:
+            value = [eval_keyword(element) if element in KEYWORD_MAP
+                     else element for element in value]
+
+            # Make sure the list is flattened
+            flattened_list = []
+            for element in value:
+                # Make sure we don't include strings in the flattening
+                if isinstance(element, str):
+                    flattened_list.append(element)
+                else:
+                    flattened_list.extend([val for val in element])
+            value = flattened_list
+
+        else:
+            value = eval_keyword(value) if value in KEYWORD_MAP else value
+            if type(value) is list:
+                logger.warn(("Used a list keyword for a non-list"
+                             f"parameter: {check_name}_{param}. Discarding"
+                             " the value."))
+                return None
+
+        # If the parameter is a pattern, convert it for regex matching
+        if (not opts.no_process_patterns and setting.is_pattern):
+            if is_list:
+                converted_patterns = []
+                for pattern in value:
+                    converted = convert_gitstyle_pattern_to_regex(pattern)
+                    converted_patterns.append(converted)
+                value = converted_patterns
+            else:
+                value = convert_gitstyle_pattern_to_regex(value)
+
+    setattr(opts, key, value)
+
+    if value is None and setting.required:
+        return False
+    else:
+        return True
+
+
+def resolve_check_params(opts, config):
+    """ Process and validate all check settings for all checks. """
+
+    for check in AVAILABLE_CHECKS:
+        check_name = check.name
+
+        if check_name not in opts.checks or check_name in opts.skip_checks:
+            continue
+
+        settings = check.get_vars()
+        missing_params = []
+
+        for setting in settings:
+            found = resolve_check_param(opts, config, check_name, setting)
+            if not found:
+                missing_params.append(setting.name)
+
+        if missing_params:
+            logger.warning((f"Missing parameters for {check_name} check:"
+                            f" {missing_params}, skipping this check."))
+            opts.checks.remove(check_name)
+
+
+def find_file(search_path, filename):
+    """ Search for filename within search_path and return the resulting file
+        path relative to search_path.
+    """
+
+    filepath = None
+
+    git_tracked = f"git -C {search_path} ls-files *{filename}"
+    git_untracked = (f"git -C {search_path} ls-files --others"
+                     " --exclude-standard *{filename}")
+    git_cmd = f"{git_tracked} && {git_untracked} | head -n1"
+
+    process = subprocess.Popen(git_cmd,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL,
+                               shell=True)
+    stdout, _ = process.communicate()
+    stdout = stdout.decode().strip()
+
+    if process.returncode != 0:
+        # search_path is not a git repository
+        # Fallback to using find instead
+
+        find_cmd = f"find {search_path} -name {filename} -print -quit"
+        process = subprocess.Popen(find_cmd,
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL,
+                                   shell=True)
+        stdout, _ = process.communicate()
+        stdout = stdout.decode().strip()
+
+    return stdout
+
+
+def resolve_settings(opts):
+    """ Perform validation and operations relating to the options supplied. """
+
+    # Resolve 'log'
+    logger.setLevel(LOG_LEVELS.get(opts.log.lower()))
+
+    # Resolve 'venv' and 'no_venv'
     # Validate the opts (venv and no_venv are mutually exclusive)
     if opts.venv is not None and opts.no_venv is True:
         logger.error((f"Cannot provide a path via --venv while also setting"
                       " --no_venv."))
         exit(1)
 
+    # Resolve 'project_root'
+    opts.project_root = os.path.abspath(opts.project_root)
+    # Initialize the keyword value to the user-provided root
+    KEYWORD_MAP["ROOT"] = opts.project_root
+
+    # Resolve 'config'
+    if opts.no_config:
+        config = {}
+
+    elif opts.config:
+        config = parse_config(opts.config)
+
+    else:
+        # We haven't said we don't want to load a config file
+        # But we haven't provided a config file to load
+        # So see if we can find one
+        opts.config = find_file(opts.project_root,
+                                DEFAULT_CONFIG_FILENAME)
+
+        if opts.config:
+            config = parse_config(opts.config)
+        else:
+            logger.info((f"A config file '{DEFAULT_CONFIG_FILENAME}' could not"
+                         " be found. Continuing without a config file"))
+            config = {}
+
+    # Resolve 'default_check_excludes'
+    value = []
+    if opts.default_check_excludes is not None:
+        value.extend(opts.default_check_excludes.split(","))
+
+    if 'default_check_excludes' in config and config['default_check_excludes']:
+        value.extend(config['default_check_excludes'])
+
+    opts.default_check_excludes = value
+
+    # Resolve 'checks'
+    resolve_checks_list(opts, config)
+
+    # Resolve 'skip_checks'
     # Only allow a check to be skipped if it has been provided
     if opts.skip_checks:
         if any([skip not in opts.checks for skip in opts.skip_checks]):
             logger.error("Cannot skip a check that wasn't requested.")
             exit(1)
 
-    # Set default here because the append action extends the argparse default
-    # rather than replaces the default
-    if len(opts.checks) == 0 or "default" in opts.checks:
-        opts.checks = default_check_names
-
-    if "all" in opts.checks:
-        opts.checks = check_names
-
-    if opts.config is None:
-        opts.config = os.path.join(opts.project_root, default_config_file)
-
-    # Initialize the keyword value to the user-provided root
-    KEYWORD_MAP["ROOT"] = opts.project_root
-
-    return opts
-
-
-def load_param_from_config(config_filename, check_name, param, list_param):
-    """ Check the config YAML file for the existance of the given parameter
-        for the given check module. The boolean list_param determines if the
-        value should read and validated as a list type.
-        If a value is not found, then a default will be taken from the defaults
-        YAML section..
-
-        Return None if no value could be found. """
-
-    value = None
-
-    try:
-        import yaml
-
-        with open(config_filename, 'r') as config_file:
-            config = yaml.safe_load(config_file)
-
-            found_value = False
-            found_default = False
-
-            # Check if there is a default
-            default = None
-            try:
-                default = config["defaults"][param]
-                found_default = True
-            except KeyError:
-                pass
-
-            # Check if there is a defined value in the config
-            try:
-                value = config["modules"][check_name][param]
-                found_value = True
-            except KeyError:
-                pass
-
-            if found_value:
-                pass
-            elif found_default:
-                # Replace with the default
-                value = default
-            else:
-                return None
-
-            if value is not None:
-                # Check the resulting type is as expected
-                if ((list_param and type(value) is not list) or
-                        (not list_param and type(value) is list)):
-                    logger.error((f"Type of {check_name} {param} in"
-                                  f" {config_filename} does not match type"
-                                  " expected by check module. Discarding"
-                                  " this value."))
-                    return None
-                if list_param and None in value:
-                    logger.error(("Found one or more empty elements for the"
-                                  f" {check_name} {param} list variable in"
-                                  f" {config_filename}. Discarding this"
-                                  " value."))
-                    return None
-
-    except FileNotFoundError:
-        logger.error(f"Config file '{config_filename}' was not found.")
-        exit(1)
-    except ImportError:
-        logger.error(("Could not import the Python yaml module. Either install"
-                      " 'pyyaml' via pip on the host system to load"
-                      " the YAML configuration file, or pass --no_config."))
-        exit(1)
-
-    return value
+    # Resolve all check params
+    resolve_check_params(opts, config)
 
 
 def load_check_params(
         opts,
         check_name,
-        list_vars,
-        plain_vars,
-        optional_var_names):
-    """ For each variable, we check if we already have a value from the command
-        line arguments. If we do, we either append it to or replace the default
-        in the configuration YAML file, depending on whether or not it is a
-        list variable. If no value can be found and the variable is not
-        optional, then the check will be skipped, by removing it from the opts.
-
-        If --no_config was supplied, the YAML file is not read at all, and
-        only the user-supplied arguments considered. """
+        settings):
+    """ Load check params from the resolved opts. """
 
     params = dict()
     missing_params = list()
 
-    combined_list = list_vars + plain_vars
-
-    for param in combined_list:
-        key = f"{check_name}_{param}"
-
-        is_list = param in list_vars
-
-        # Get value from config file
-        config_value = None
-        if opts.no_config is False:
-            config_value = load_param_from_config(opts.config,
-                                                  check_name,
-                                                  param,
-                                                  is_list)
-
-        # Get value from command line args
-        value = None
-        try:
-            value = getattr(opts, key)
-            if value is not None and is_list:
-                value = value.split(",")
-        except AttributeError:
-            pass
-
-        # Merge with list from config file
-        if config_value is not None and is_list:
-            if value is not None:
-                value.extend(config_value)
-
-        if value is None:
-            value = config_value
-
-        # If value is still None, then we didn't find anything for this param
-        # from command line or config file
-        if value is not None:
-
-            # Replace any keywords with mapped values
-            # If it's a list, extend with the contents of the keyword
-            # If it's not a list, replace with the contents of the keyword
-            if is_list:
-                value = [eval_keyword(element) if element in KEYWORD_MAP
-                         else element for element in value]
-
-                # Make sure the list is flattened
-                flattened_list = []
-                for element in value:
-                    # Make sure we don't include strings in the flattening
-                    if isinstance(element, str):
-                        flattened_list.append(element)
-                    else:
-                        flattened_list.extend([val for val in element])
-                value = flattened_list
-
-            else:
-                value = eval_keyword(value) if value in KEYWORD_MAP else value
-                if type(value) is list:
-                    logger.warn(("Used a list keyword for a non-list"
-                                 f"parameter: {check_name}_{param}. Discarding"
-                                 " the value."))
-                    return None
-
-            # If the parameter is a pattern, convert it for regex matching
-            if (not opts.no_process_patterns and
-                    (param.endswith("_pattern") or
-                     param.endswith("_patterns"))):
-                if is_list:
-                    converted_patterns = []
-                    for pattern in value:
-                        converted = convert_gitstyle_pattern_to_regex(pattern)
-                        converted_patterns.append(converted)
-                    value = converted_patterns
-                else:
-                    value = convert_gitstyle_pattern_to_regex(value)
-
-            params[param] = value
-            setattr(opts, key, value)
-        else:
-            # Nothing supplied for this parameter
-
-            if param in optional_var_names:
-                # Optional, so pass it through to the check module as None
-                value = None
-                params[param] = value
-                setattr(opts, key, value)
-            else:
-                # Required, set as missing
-                missing_params.append(param)
-
-    if missing_params:
-        logger.warning((f"Missing parameters for {check_name} check:"
-                        f" {missing_params}, skipping this check."))
-        opts.checks.remove(check_name)
-        return None
+    for setting in settings:
+        key = f"{check_name}_{setting.name}"
+        value = getattr(opts, key)
+        params[setting.name] = value
 
     return params
 
@@ -500,23 +682,24 @@ def build_check_modules(opts):
 
     checkers = []
 
+    queue = multiprocessing.Queue(-1)
+
     for check_module in AVAILABLE_CHECKS:
         name = check_module.name
         if name in opts.checks and name not in opts.skip_checks:
 
-            list_vars, plain_vars, optional_var_names = check_module.get_vars()
+            settings = check_module.get_vars()
 
-            params = load_check_params(opts,
-                                       name,
-                                       list(list_vars.keys()),
-                                       list(plain_vars.keys()),
-                                       optional_var_names)
+            params = load_check_params(opts, name, settings)
 
             if params:
                 # All check modules have a project_root variable
                 params["project_root"] = eval_keyword("ROOT")
 
-                check = check_module(logger, **params)
+                check_logger = logging.getLogger(name)
+                check_logger.addHandler(logging.handlers.QueueHandler(queue))
+
+                check = check_module(check_logger, **params)
                 checkers.append(check)
 
     return checkers
@@ -568,6 +751,49 @@ def generate_venv_script_args_from_opts(opts):
     return args
 
 
+def run_checker(checker):
+    rc = 0
+    try:
+        rc = checker.run()
+    except Exception as e:
+        logger.error(("Caught exception when executing the"
+                      f" {checker.name} check:"))
+        logger.error(''.join(traceback.format_exception(
+            etype=type(e), value=e, tb=e.__traceback__)))
+        rc = 1
+
+    return rc
+
+
+def run_checks_parallel(checkers, failed_modules, number_threads):
+
+    logger.debug("Creating process pool")
+
+    proc_pool = multiprocessing.Pool(number_threads)
+    queue = multiprocessing.Queue(-1)
+
+    queue_listener = logging.handlers.QueueListener(
+        queue, *logger.handlers, respect_handler_level=True)
+
+    queue_listener.start()
+    logger.debug("Waiting for processes.")
+    checker_rcs = proc_pool.map(run_checker, checkers)
+
+    queue_listener.stop()
+
+    rc = 0
+
+    # Process return codes
+    for i, checker in enumerate(checkers):
+        checker_rc = checker_rcs[i]
+        if checker_rc != 0:
+            failed_modules.add(checker.name)
+
+        rc |= checker_rc
+
+    return rc
+
+
 def main():
     if sys.version_info < (3, 8):
         raise ValueError("This script requires Python 3.8 or later")
@@ -577,12 +803,17 @@ def main():
     # Get the options that the user supplied
     opts = parse_options()
 
+    # Process and validate the options
+    resolve_settings(opts)
+
     # Build the checkers, loading configuration from the config file if
     # necessary
     checkers = build_check_modules(opts)
 
     if not checkers:
-        logger.info("Found no requested checks to run.")
+        logger.info("Found no requested checks to run. Please select checks to"
+                    " run from the following list:"
+                    f" {{{','.join(CHECK_NAMES)}}}.")
         exit(0)
 
     # Validate checkers conform to API
@@ -608,22 +839,8 @@ def main():
 
         failed_modules = set()
 
-        # Run the checkers
-        for checker in checkers:
-            rc = 0
-            try:
-                rc = checker.run()
-                if rc != 0:
-                    failed_modules.add(checker.name)
-            except Exception as e:
-                logger.error(("Caught exception when executing the"
-                              f" {checker.name} check:"))
-                logger.error(''.join(traceback.format_exception(
-                    etype=type(e), value=e, tb=e.__traceback__)))
-                failed_modules.add(checker.name)
-                rc = 1
-
-            exit_code |= rc
+        exit_code |= run_checks_parallel(checkers, failed_modules,
+                                         opts.number_threads)
 
         for skipped_check in opts.skip_checks:
 
