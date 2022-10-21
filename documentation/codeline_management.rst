@@ -16,12 +16,17 @@ issues.
 Yocto Release Process Overview
 ******************************
 
+|
+
 .. image:: images/ewaol_rel_yocto_overview.png
    :align: center
 
+|
+
 The diagram above gives an overview of the Yocto branch and release process:
 
-* Development happens primarily in the master (or main) branch.
+* |inclusivity-exception| Development happens primarily in the master (or main)
+  branch.
 * The project has a major release roughly every 6 months where a stable release
   branch is created.
 * Each major release has a `codename` which is also used to name the stable
@@ -38,8 +43,12 @@ other details, see the |Yocto Release Process|_ documentation.
 EWAOL Branch and Release Process
 ********************************
 
+|
+
 .. image:: images/ewaol_rel_dev_branches.png
    :align: center
+
+|
 
 EWAOL's branch and release process is based on the Yocto release process. The
 following sub-sections describe in more details the branch strategy for EWAOL's
@@ -49,10 +58,13 @@ EWAOL main branch
 =================
 
 * Represented by the green line on the diagram above.
-* The repository's ``main`` branch is meant to be compatible with ``master`` or
-  ``main`` branches from Poky and 3rd party layers.
+
+* The repository's ``main`` branch is meant to be compatible with
+  |inclusivity-exception| ``master`` or ``main`` branches from Poky and 3rd
+  party layers.
 * ``meta-ewaol`` is not actively developed on this ``main`` branch to avoid the
-  instability inherited from Yocto development on the master branch.
+  instability inherited from Yocto development on the
+  |inclusivity-exception| master branch.
 * To reduce the effort required to move EWAOL to a new version of Yocto, this
   main branch is periodically updated with patches from the
   `EWAOL development branches`_  on a regular basis.

@@ -39,19 +39,36 @@ class LayerCheck(abstract_check.AbstractCheck):
 
     @staticmethod
     def get_vars():
-        list_vars = {}
-        plain_vars = {}
-        optional_var_names = []
-
-        list_vars["kas_configs"] = (
-            "Colon-separated string of kas config YAML files that provides the"
-            " build context for the layer check, as required by the"
-            " kas-runner.py script.")
-
-        list_vars["test_layers"] = ("Yocto layers to be tested, given by their"
-                                    " directory basenames.")
-
-        return list_vars, plain_vars, optional_var_names
+        return [
+            abstract_check.CheckSetting(
+                "kas_configs",
+                is_list=True,
+                required=True,
+                message=("Colon-separated string of kas config YAML files that"
+                         " provides the build context for the layer check, as"
+                         " required by the kas-runner.py script.")
+            ),
+            abstract_check.CheckSetting(
+                "test_layers",
+                is_list=True,
+                required=True,
+                message=("Yocto layers to be tested, given by their directory"
+                         " basenames.")
+            ),
+            abstract_check.CheckSetting(
+                "machines",
+                is_list=True,
+                message=("Optional names of MACHINEs that should be used for"
+                         " the layer check.")
+            ),
+            abstract_check.CheckSetting(
+                "network_mode",
+                required=False,
+                message=("The docker container network mode to pass to the"
+                         " kas-runner.py script. If not set, the default value"
+                         " set by the kas-runner.py script will be used.")
+            )
+        ]
 
     def __init__(self, logger, *args, **kwargs):
         self.logger = logger
@@ -70,8 +87,13 @@ class LayerCheck(abstract_check.AbstractCheck):
             resulting Yocto layers (according to the BBLAYERS variable). """
 
         kas_cmd = "shell --command \\\"bitbake-getvar BBLAYERS\\\""
+        if self.network_mode:
+            network_arg = f" --network_mode=\"{self.network_mode}\""
+        else:
+            network_arg = ""
+
         cmd = (f"{self.script} --project_root=\"{self.project_root}\""
-               f" --kas_arguments \"{kas_cmd}\" {kas_config}")
+               f"{network_arg} --kas_arguments \"{kas_cmd}\" {kas_config}")
 
         process = subprocess.Popen(cmd,
                                    stdout=subprocess.PIPE,
@@ -167,16 +189,24 @@ class LayerCheck(abstract_check.AbstractCheck):
             # The yocto-check-layer-wrapper script will create a temporary
             # directory in the parent directory of BUILDDIR
             # So set BUILDDIR to a subidrectory of build/
-            shell_cmd = ("mkdir -p /work/build/layer_check &&"
-                         " BUILDDIR=/work/build/layer_check BB_NO_NETWORK=1"
+            shell_cmd = ("mkdir -p /work/kas_work_dir/build/layer_check &&"
+                         " BUILDDIR=/work/kas_work_dir/build/layer_check"
+                         " BB_NO_NETWORK=1"
                          f" yocto-check-layer-wrapper {test_layers_str}"
-                         f" {dependencies} --no-auto-dependency"
-                         " --machines qemuarm64 n1sdp")
+                         f" {dependencies} --no-auto-dependency")
+
+            if self.machines:
+                shell_cmd += f" --machines {' '.join(self.machines)}"
 
             kas_cmd = f"shell --command \\\"{shell_cmd}\\\""
 
+            if self.network_mode:
+                network_arg = f" --network_mode=\"{self.network_mode}\""
+            else:
+                network_arg = ""
+
             cmd = (f"{self.script} --project_root=\"{self.project_root}\""
-                   f" --kas_arguments \"{kas_cmd}\" {kas_config}")
+                   f"{network_arg} --kas_arguments \"{kas_cmd}\" {kas_config}")
 
             self.logger.debug(f"Running layer check via: {cmd}")
 
