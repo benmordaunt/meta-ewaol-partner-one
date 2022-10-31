@@ -29,7 +29,6 @@ IMAGE_INSTALL += " \
     bash-completion-extra \
     ca-certificates \
     docker-ce \
-    fwupd \
     k3s-server \
     procps \
     sudo \
