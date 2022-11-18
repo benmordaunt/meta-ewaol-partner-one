@@ -21,4 +21,9 @@ local_conf_header:
   ewaol-virtualization: |
      DOM0_MEMORY_SIZE = "${EWAOL_CONTROL_VM_MEMORY_SIZE}"
 
+  aws-custom: |
+     FILESEXTRAPATHS:prepend:pn-linux-ampere-lts := "${TOPDIR}/../kernelconfigs:"
+     SRC_URI:append:pn-linux-ampere-lts = " file://awscanava.cfg "
+     IMAGE_INSTALL:append = " canutils"
+
 machine: ava
